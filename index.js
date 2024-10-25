@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const { Telegraf } = require('telegraf');
 const { message } = require('telegraf/filters');
-const { PrismaClient, Prisma } = require('@prisma/client');
+const { PrismaClient } = require('@prisma/client');
 const express = require('express');
 const cors = require('cors');
 
@@ -10,32 +10,19 @@ const prisma = new PrismaClient();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const app = express();
 
-async function checkDatabaseStructure() {
-  try {
-    const tableInfo = await prisma.$queryRaw`
-      SELECT column_name, data_type 
-      FROM information_schema.columns 
-      WHERE table_name = 'Message'
-    `;
-    console.log('Estrutura da tabela Message:', tableInfo);
-  } catch (error) {
-    console.error('Erro ao verificar a estrutura do banco de dados:', error);
-  }
-}
-
-checkDatabaseStructure();
-
 async function initializeDatabase() {
   try {
     await prisma.$connect();
     console.log('Conectado ao banco de dados via Prisma');
     
-    // Tenta fazer uma consulta simples para verificar se a tabela existe
+    // Tenta fazer uma consulta simples para verificar se as tabelas existem
     await prisma.tradeSignal.findFirst();
     console.log('Tabela TradeSignal existe e está acessível.');
+    await prisma.message.findFirst();
+    console.log('Tabela Message existe e está acessível.');
   } catch (error) {
     console.error('Erro ao conectar ou verificar o banco de dados:', error);
-    process.exit(1);
+    throw error; // Propaga o erro para ser tratado na inicialização principal
   }
 }
 
@@ -101,10 +88,8 @@ bot.on('polling_error', (error) => {
 
 bot.catch((err) => {
   console.error('Erro no bot:', err);
-  console.error('Stack trace:', err.stack);
 });
 
-// Adicione este bloco de código após a inicialização do bot
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
@@ -144,38 +129,43 @@ app.get('/messages/text', async (req, res) => {
   }
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`API rodando na porta ${server.address().port}`);
-});
-
-// Modifique a parte de inicialização para:
-initializeDatabase()
-  .then(() => {
-    return Promise.all([
-      bot.launch(),
-      new Promise((resolve) => {
-        server.on('listening', () => {
-          console.log(`Servidor Express iniciado na porta ${server.address().port}`);
-          resolve();
-        });
-      })
-    ]);
-  })
-  .then(() => {
-    console.log('Bot iniciado, conectado ao banco de dados e servidor Express rodando');
-  })
-  .catch((error) => {
-    console.error('Erro ao iniciar o bot, conectar ao banco de dados ou iniciar o servidor:', error);
-    process.exit(1);
+function startServer() {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(PORT, () => {
+      console.log(`API rodando na porta ${server.address().port}`);
+      resolve(server);
+    }).on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        console.log(`Porta ${PORT} já está em uso. Tentando a próxima...`);
+        server.close();
+        startServer(PORT + 1).then(resolve).catch(reject);
+      } else {
+        reject(error);
+      }
+    });
   });
+}
 
-// Encerrar o bot e fechar a conexão do Prisma quando o processo for encerrado
-process.on('SIGINT', async () => {
-    bot.stop('SIGINT');
-    await prisma.$disconnect();
-    process.exit();
-});
+async function main() {
+  try {
+    await initializeDatabase();
+    const server = await startServer();
+    await bot.launch();
+    console.log('Bot iniciado, conectado ao banco de dados e servidor Express rodando');
 
-bot.launch().catch((error) => {
-  console.error('Erro ao iniciar o bot:', error);
-});
+    // Encerrar o bot e fechar a conexão do Prisma quando o processo for encerrado
+    process.on('SIGINT', async () => {
+      bot.stop('SIGINT');
+      await prisma.$disconnect();
+      server.close(() => {
+        console.log('Servidor HTTP fechado');
+        process.exit(0);
+      });
+    });
+  } catch (error) {
+    console.error('Erro na inicialização:', error);
+    process.exit(1);
+  }
+}
+
+main();
