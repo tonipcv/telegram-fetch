@@ -3,33 +3,20 @@ require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const { message } = require('telegraf/filters');
 const { PrismaClient, Prisma } = require('@prisma/client');
+const express = require('express');
+const cors = require('cors');
 
 const prisma = new PrismaClient();
 const bot = new Telegraf(process.env.BOT_TOKEN);
-
-// Adicione no início do arquivo, logo após a criação da instância do PrismaClient
-async function testDatabaseConnection() {
-  try {
-    const testMessage = await prisma.message.create({
-      data: {
-        text: 'Teste de conexão',
-      },
-    });
-    console.log('Teste de conexão bem-sucedido:', testMessage);
-  } catch (error) {
-    console.error('Erro no teste de conexão:', error);
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      console.error('Código do erro Prisma:', error.code);
-      console.error('Mensagem do erro Prisma:', error.message);
-    }
-  }
-}
-
-testDatabaseConnection();
+const app = express();
 
 async function checkDatabaseStructure() {
   try {
-    const tableInfo = await prisma.$queryRaw`PRAGMA table_info(Message)`;
+    const tableInfo = await prisma.$queryRaw`
+      SELECT column_name, data_type 
+      FROM information_schema.columns 
+      WHERE table_name = 'Message'
+    `;
     console.log('Estrutura da tabela Message:', tableInfo);
   } catch (error) {
     console.error('Erro ao verificar a estrutura do banco de dados:', error);
@@ -38,9 +25,31 @@ async function checkDatabaseStructure() {
 
 checkDatabaseStructure();
 
-prisma.$connect()
-  .then(() => console.log('Conectado ao banco de dados via Prisma'))
-  .catch((error) => console.error('Erro ao conectar via Prisma:', error));
+async function initializeDatabase() {
+  try {
+    await prisma.$connect();
+    console.log('Conectado ao banco de dados via Prisma');
+    
+    // Verifica se a tabela Message existe
+    const tableExists = await prisma.$queryRaw`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public'
+        AND table_name = 'Message'
+      ) as table_exists
+    `;
+    if (!tableExists[0].table_exists) {
+      console.log('A tabela Message não existe. Execute as migrações do Prisma.');
+      process.exit(1);
+    }
+  } catch (error) {
+    console.error('Erro ao conectar ou verificar o banco de dados:', error);
+    process.exit(1);
+  }
+}
+
+// Configuração do CORS
+app.use(cors());
 
 // Middleware para logar todas as atualizações
 bot.use((ctx, next) => {
@@ -100,9 +109,67 @@ bot.catch((err) => {
   console.error('Stack trace:', err.stack);
 });
 
-bot.launch()
-  .then(() => console.log('Bot iniciado'))
-  .catch((error) => console.error('Erro ao iniciar o bot:', error));
+// Adicione este bloco de código após a inicialização do bot
+const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+
+app.get('/messages', async (req, res) => {
+  try {
+    const messages = await prisma.message.findMany({
+      orderBy: {
+        createdAt: 'desc'
+      },
+      take: 100 // Limita a 100 mensagens mais recentes
+    });
+    res.json(messages);
+  } catch (error) {
+    console.error('Erro ao buscar mensagens:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Adicione a nova rota aqui
+app.get('/messages/text', async (req, res) => {
+  try {
+    const messages = await prisma.message.findMany({
+      select: {
+        text: true
+      },
+      orderBy: {
+        createdAt: 'desc'
+      },
+      take: 100 // Limita a 100 mensagens mais recentes
+    });
+    const textOnly = messages.map(message => message.text);
+    res.json(textOnly);
+  } catch (error) {
+    console.error('Erro ao buscar textos das mensagens:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+const server = app.listen(PORT, () => {
+  console.log(`API rodando na porta ${server.address().port}`);
+});
+
+// Modifique a linha de lançamento do bot para:
+Promise.all([
+  initializeDatabase(),
+  bot.launch(),
+  new Promise((resolve) => {
+    server.on('listening', () => {
+      console.log(`Servidor Express iniciado na porta ${server.address().port}`);
+      resolve();
+    });
+  })
+])
+.then(() => {
+  console.log('Bot iniciado, conectado ao banco de dados e servidor Express rodando');
+})
+.catch((error) => {
+  console.error('Erro ao iniciar o bot, conectar ao banco de dados ou iniciar o servidor:', error);
+});
 
 // Encerrar o bot e fechar a conexão do Prisma quando o processo for encerrado
 process.on('SIGINT', async () => {
