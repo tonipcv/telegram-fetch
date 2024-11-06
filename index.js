@@ -94,66 +94,97 @@ app.get('/trades', async (req, res) => {
   }
 });
 
-// Nova rota POST para criar sinais de trade
+// Modificar a rota POST /trades para aceitar array de sinais
 app.post('/trades', async (req, res) => {
   try {
-    const { symbol, type, entry, sl, tp, text } = req.body;
+    // Verifica se o body é um array
+    const signals = Array.isArray(req.body) ? req.body : [req.body];
 
-    // Validação básica dos campos
-    if (!symbol || !type || !entry || !sl || !tp) {
-      return res.status(400).json({
-        error: 'Campos obrigatórios faltando',
-        required: ['symbol', 'type', 'entry', 'sl', 'tp'],
-        received: req.body
-      });
-    }
+    const results = [];
+    const errors = [];
 
-    // Validação do tipo de trade
-    if (!['COMPRA', 'VENDA'].includes(type.toUpperCase())) {
-      return res.status(400).json({
-        error: 'Tipo de trade inválido',
-        allowedTypes: ['COMPRA', 'VENDA'],
-        received: type
-      });
-    }
+    // Processa cada sinal no array
+    for (const signal of signals) {
+      const { symbol, type, entry, sl, tp, text } = signal;
 
-    // Validação dos valores numéricos
-    const numericFields = { entry, sl, tp };
-    for (const [field, value] of Object.entries(numericFields)) {
-      if (isNaN(parseFloat(value))) {
-        return res.status(400).json({
-          error: `Campo ${field} deve ser um número válido`,
-          received: value
+      // Validação básica dos campos
+      if (!symbol || !type || !entry || !sl || !tp) {
+        errors.push({
+          error: 'Campos obrigatórios faltando',
+          required: ['symbol', 'type', 'entry', 'sl', 'tp'],
+          received: signal
+        });
+        continue;
+      }
+
+      // Validação do tipo de trade
+      if (!['COMPRA', 'VENDA'].includes(type.toUpperCase())) {
+        errors.push({
+          error: 'Tipo de trade inválido',
+          allowedTypes: ['COMPRA', 'VENDA'],
+          received: type
+        });
+        continue;
+      }
+
+      // Validação dos valores numéricos
+      const numericFields = { entry, sl, tp };
+      let hasNumericError = false;
+      for (const [field, value] of Object.entries(numericFields)) {
+        if (isNaN(parseFloat(value))) {
+          errors.push({
+            error: `Campo ${field} deve ser um número válido`,
+            received: value
+          });
+          hasNumericError = true;
+          break;
+        }
+      }
+      if (hasNumericError) continue;
+
+      try {
+        // Criar o sinal de trade
+        const trade = await prisma.tradeSignal.create({
+          data: {
+            symbol: symbol.toUpperCase(),
+            type: type.toUpperCase(),
+            entry: parseFloat(entry),
+            sl: parseFloat(sl),
+            tp: parseFloat(tp),
+            text: text || `${symbol.toUpperCase()} - ${type.toUpperCase()} em ${entry}`
+          }
+        });
+
+        // Criar mensagem associada
+        await prisma.message.create({
+          data: {
+            text: `SINAL\nPAR: ${trade.symbol}\n${trade.type}\nENTRADA: ${trade.entry}\nSL: ${trade.sl}\nTP: ${trade.tp}`
+          }
+        });
+
+        results.push(trade);
+      } catch (error) {
+        errors.push({
+          error: 'Erro ao processar sinal',
+          details: error.message,
+          signal
         });
       }
     }
 
-    // Criar o sinal de trade
-    const trade = await prisma.tradeSignal.create({
-      data: {
-        symbol: symbol.toUpperCase(),
-        type: type.toUpperCase(),
-        entry: parseFloat(entry),
-        sl: parseFloat(sl),
-        tp: parseFloat(tp),
-        text: text || `${symbol.toUpperCase()} - ${type.toUpperCase()} em ${entry}`
-      }
-    });
-
-    // Criar mensagem associada
-    await prisma.message.create({
-      data: {
-        text: `SINAL\nPAR: ${trade.symbol}\n${trade.type}\nENTRADA: ${trade.entry}\nSL: ${trade.sl}\nTP: ${trade.tp}`
-      }
-    });
-
+    // Retorna resposta no formato esperado
     res.status(201).json({
-      message: 'Sinal de trade criado com sucesso',
-      data: trade
+      data: results,
+      errors: errors.length > 0 ? errors : undefined,
+      metadata: {
+        total: results.length,
+        errors: errors.length,
+        timestamp: new Date().toISOString()
+      }
     });
 
   } catch (error) {
-    console.error('Erro ao criar sinal de trade:', error);
+    console.error('Erro ao processar sinais:', error);
     res.status(500).json({
       error: 'Erro interno do servidor',
       details: error.message
@@ -161,33 +192,59 @@ app.post('/trades', async (req, res) => {
   }
 });
 
-// Nova rota POST para criar mensagens
+// Modificar a rota POST /messages para aceitar array de mensagens
 app.post('/messages', async (req, res) => {
   try {
-    const { text } = req.body;
+    // Verifica se o body é um array
+    const messages = Array.isArray(req.body) ? req.body : [req.body];
 
-    // Validação básica
-    if (!text) {
-      return res.status(400).json({
-        error: 'Campo text é obrigatório',
-        received: req.body
-      });
+    const results = [];
+    const errors = [];
+
+    // Processa cada mensagem no array
+    for (const messageData of messages) {
+      const { text } = messageData;
+
+      // Validação básica
+      if (!text) {
+        errors.push({
+          error: 'Campo text é obrigatório',
+          received: messageData
+        });
+        continue;
+      }
+
+      try {
+        // Criar a mensagem
+        const message = await prisma.message.create({
+          data: {
+            text: text
+          }
+        });
+
+        results.push(message);
+      } catch (error) {
+        errors.push({
+          error: 'Erro ao processar mensagem',
+          details: error.message,
+          message: messageData
+        });
+      }
     }
 
-    // Criar a mensagem
-    const message = await prisma.message.create({
-      data: {
-        text: text
+    // Retorna resposta no formato esperado
+    res.status(201).json({
+      data: results,
+      errors: errors.length > 0 ? errors : undefined,
+      metadata: {
+        total: results.length,
+        errors: errors.length,
+        timestamp: new Date().toISOString()
       }
     });
 
-    res.status(201).json({
-      message: 'Mensagem criada com sucesso',
-      data: message
-    });
-
   } catch (error) {
-    console.error('Erro ao criar mensagem:', error);
+    console.error('Erro ao criar mensagens:', error);
     res.status(500).json({
       error: 'Erro interno do servidor',
       details: error.message
