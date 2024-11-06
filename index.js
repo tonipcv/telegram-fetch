@@ -94,6 +94,107 @@ app.get('/trades', async (req, res) => {
   }
 });
 
+// Nova rota POST para criar sinais de trade
+app.post('/trades', async (req, res) => {
+  try {
+    const { symbol, type, entry, sl, tp, text } = req.body;
+
+    // Validação básica dos campos
+    if (!symbol || !type || !entry || !sl || !tp) {
+      return res.status(400).json({
+        error: 'Campos obrigatórios faltando',
+        required: ['symbol', 'type', 'entry', 'sl', 'tp'],
+        received: req.body
+      });
+    }
+
+    // Validação do tipo de trade
+    if (!['COMPRA', 'VENDA'].includes(type.toUpperCase())) {
+      return res.status(400).json({
+        error: 'Tipo de trade inválido',
+        allowedTypes: ['COMPRA', 'VENDA'],
+        received: type
+      });
+    }
+
+    // Validação dos valores numéricos
+    const numericFields = { entry, sl, tp };
+    for (const [field, value] of Object.entries(numericFields)) {
+      if (isNaN(parseFloat(value))) {
+        return res.status(400).json({
+          error: `Campo ${field} deve ser um número válido`,
+          received: value
+        });
+      }
+    }
+
+    // Criar o sinal de trade
+    const trade = await prisma.tradeSignal.create({
+      data: {
+        symbol: symbol.toUpperCase(),
+        type: type.toUpperCase(),
+        entry: parseFloat(entry),
+        sl: parseFloat(sl),
+        tp: parseFloat(tp),
+        text: text || `${symbol.toUpperCase()} - ${type.toUpperCase()} em ${entry}`
+      }
+    });
+
+    // Criar mensagem associada
+    await prisma.message.create({
+      data: {
+        text: `SINAL\nPAR: ${trade.symbol}\n${trade.type}\nENTRADA: ${trade.entry}\nSL: ${trade.sl}\nTP: ${trade.tp}`
+      }
+    });
+
+    res.status(201).json({
+      message: 'Sinal de trade criado com sucesso',
+      data: trade
+    });
+
+  } catch (error) {
+    console.error('Erro ao criar sinal de trade:', error);
+    res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
+// Nova rota POST para criar mensagens
+app.post('/messages', async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    // Validação básica
+    if (!text) {
+      return res.status(400).json({
+        error: 'Campo text é obrigatório',
+        received: req.body
+      });
+    }
+
+    // Criar a mensagem
+    const message = await prisma.message.create({
+      data: {
+        text: text
+      }
+    });
+
+    res.status(201).json({
+      message: 'Mensagem criada com sucesso',
+      data: message
+    });
+
+  } catch (error) {
+    console.error('Erro ao criar mensagem:', error);
+    res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
 // Inicialização do servidor
 const PORT = process.env.PORT || 3000;
 
