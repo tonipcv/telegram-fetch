@@ -7,28 +7,54 @@ const cors = require('cors');
 const prisma = new PrismaClient();
 const app = express();
 
-// Configuração do CORS e JSON parsing
-app.use(cors());
+// Configuração do CORS mais permissiva
+app.use(cors({
+  origin: '*', // Permite todas as origens
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
-// Rota de healthcheck
+// Rota de healthcheck mais detalhada
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV,
+    port: process.env.PORT || 3000
+  });
 });
 
-// Rota para buscar todas as mensagens
+// Rota para buscar todas as mensagens com paginação
 app.get('/messages', async (req, res) => {
   try {
-    const messages = await prisma.message.findMany({
-      orderBy: {
-        createdAt: 'desc'
-      },
-      take: 100
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 100;
+    const skip = (page - 1) * limit;
+
+    const [messages, total] = await Promise.all([
+      prisma.message.findMany({
+        orderBy: {
+          createdAt: 'desc'
+        },
+        skip,
+        take: limit
+      }),
+      prisma.message.count()
+    ]);
+
+    res.json({
+      data: messages,
+      pagination: {
+        total,
+        page,
+        pages: Math.ceil(total / limit)
+      }
     });
-    res.json(messages);
   } catch (error) {
     console.error('Erro ao buscar mensagens:', error);
-    res.status(500).json({ error: 'Erro interno do servidor' });
+    res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
   }
 });
 
@@ -73,45 +99,63 @@ const PORT = process.env.PORT || 3000;
 
 async function startServer() {
   try {
-    // Testa a conexão com o banco
     await prisma.$connect();
     console.log('Conectado ao banco de dados via Prisma');
 
-    // Inicia o servidor com melhor tratamento de erros
     const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`API rodando em http://0.0.0.0:${PORT}`);
+      console.log('Ambiente:', process.env.NODE_ENV);
     });
 
+    // Melhor tratamento de erros do servidor
     server.on('error', (error) => {
-      if (error.code === 'EACCES') {
-        console.error(`Porta ${PORT} requer privilégios elevados`);
-      } else if (error.code === 'EADDRINUSE') {
-        console.error(`Porta ${PORT} já está em uso`);
-      } else {
-        console.error('Erro ao iniciar servidor:', error);
+      console.error('Erro no servidor:', error);
+      if (error.code === 'EADDRINUSE') {
+        console.log(`Porta ${PORT} em uso, tentando próxima porta...`);
+        server.close();
+        startServer(PORT + 1);
       }
-      process.exit(1);
     });
 
-    // Tratamento de encerramento gracioso
-    const shutdown = async () => {
-      console.log('Iniciando encerramento gracioso...');
+    // Tratamento de sinais mais robusto
+    const shutdown = async (signal) => {
+      console.log(`Recebido sinal ${signal}, iniciando shutdown gracioso...`);
+      
+      // Parar de aceitar novas conexões
       server.close(async () => {
         console.log('Servidor HTTP fechado');
-        await prisma.$disconnect();
-        console.log('Conexão com banco de dados fechada');
-        process.exit(0);
+        try {
+          await prisma.$disconnect();
+          console.log('Prisma desconectado');
+          process.exit(0);
+        } catch (err) {
+          console.error('Erro ao desconectar Prisma:', err);
+          process.exit(1);
+        }
       });
 
-      // Força o encerramento após 10 segundos
+      // Timeout de segurança
       setTimeout(() => {
-        console.error('Encerramento forçado após timeout');
+        console.error('Shutdown forçado após timeout');
         process.exit(1);
-      }, 10000);
+      }, 15000);
     };
 
-    process.on('SIGTERM', shutdown);
-    process.on('SIGINT', shutdown);
+    // Registrar handlers para diferentes sinais
+    ['SIGTERM', 'SIGINT', 'SIGUSR2'].forEach(signal => {
+      process.on(signal, () => shutdown(signal));
+    });
+
+    // Tratamento de erros não capturados
+    process.on('uncaughtException', (error) => {
+      console.error('Erro não capturado:', error);
+      shutdown('uncaughtException');
+    });
+
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error('Promessa rejeitada não tratada:', reason);
+      shutdown('unhandledRejection');
+    });
 
   } catch (error) {
     console.error('Erro fatal ao iniciar servidor:', error);
@@ -120,7 +164,8 @@ async function startServer() {
   }
 }
 
-startServer().catch(error => {
-  console.error('Erro não tratado:', error);
+startServer().catch(async (error) => {
+  console.error('Erro não tratado na inicialização:', error);
+  await prisma.$disconnect();
   process.exit(1);
 });
