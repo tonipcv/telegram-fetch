@@ -233,6 +233,70 @@ app.post('/messages', async (req, res) => {
   }
 });
 
+// Nova rota para deletar todas as mensagens
+app.delete('/messages', async (req, res) => {
+  try {
+    const deletedCount = await prisma.message.deleteMany({});
+    
+    res.json({
+      success: true,
+      deletedCount: deletedCount.count,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Erro ao deletar mensagens:', error);
+    res.status(500).json({
+      error: 'Erro ao deletar mensagens',
+      details: error.message
+    });
+  }
+});
+
+// Nova rota para deletar todos os sinais de trade
+app.delete('/trades', async (req, res) => {
+  try {
+    const deletedCount = await prisma.tradeSignal.deleteMany({});
+    
+    res.json({
+      success: true,
+      deletedCount: deletedCount.count,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Erro ao deletar sinais de trade:', error);
+    res.status(500).json({
+      error: 'Erro ao deletar sinais de trade',
+      details: error.message
+    });
+  }
+});
+
+// Nova rota para deletar todos os dados (mensagens e trades)
+app.delete('/all', async (req, res) => {
+  try {
+    // Usar uma transação para garantir que ambas as operações sejam bem-sucedidas
+    const result = await prisma.$transaction([
+      prisma.message.deleteMany({}),
+      prisma.tradeSignal.deleteMany({})
+    ]);
+    
+    res.json({
+      success: true,
+      deletedCount: {
+        messages: result[0].count,
+        trades: result[1].count
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Erro ao deletar todos os dados:', error);
+    res.status(500).json({
+      error: 'Erro ao deletar dados',
+      details: error.message
+    });
+  }
+});
+
 // Inicialização do servidor
 const PORT = process.env.PORT || 3000;
 
