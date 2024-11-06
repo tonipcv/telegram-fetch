@@ -7,7 +7,18 @@ const express = require('express');
 const cors = require('cors');
 
 const prisma = new PrismaClient();
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const bot = new Telegraf(process.env.BOT_TOKEN, {
+  handlerTimeout: 90000, // 90 segundos timeout
+  telegram: {
+    // Adiciona um identificador único para esta instância
+    apiRoot: 'https://api.telegram.org',
+    webhookReply: false,
+    polling: {
+      timeout: 30,
+      limit: 100,
+    }
+  }
+});
 const app = express();
 
 async function initializeDatabase() {
@@ -149,23 +160,67 @@ function startServer() {
 async function main() {
   try {
     await initializeDatabase();
+    
+    // Primeiro, tenta limpar qualquer webhook existente
+    console.log('Removendo webhook...');
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+    
+    // Espera um pouco antes de iniciar
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
     const server = await startServer();
-    await bot.launch();
+    
+    // Tenta iniciar o bot com retry
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        console.log(`Tentando iniciar o bot (tentativas restantes: ${retries})`);
+        await bot.launch({
+          dropPendingUpdates: true,
+          polling: {
+            timeout: 30,
+            limit: 100
+          }
+        });
+        console.log('Bot iniciado com sucesso!');
+        break;
+      } catch (error) {
+        retries--;
+        if (retries === 0) throw error;
+        console.log(`Erro ao iniciar bot, tentando novamente em 5 segundos...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    }
+
     console.log('Bot iniciado, conectado ao banco de dados e servidor Express rodando');
 
-    // Encerrar o bot e fechar a conexão do Prisma quando o processo for encerrado
-    process.on('SIGINT', async () => {
-      bot.stop('SIGINT');
-      await prisma.$disconnect();
-      server.close(() => {
-        console.log('Servidor HTTP fechado');
-        process.exit(0);
-      });
-    });
+    // Melhor tratamento de encerramento
+    const shutdown = async (signal) => {
+      console.log(`Recebido sinal ${signal}`);
+      try {
+        console.log('Parando o bot...');
+        await bot.stop();
+        console.log('Desconectando do Prisma...');
+        await prisma.$disconnect();
+        console.log('Fechando servidor HTTP...');
+        server.close(() => {
+          console.log('Servidor HTTP fechado');
+          process.exit(0);
+        });
+      } catch (error) {
+        console.error('Erro durante o shutdown:', error);
+        process.exit(1);
+      }
+    };
+
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    
   } catch (error) {
     console.error('Erro na inicialização:', error);
+    await prisma.$disconnect();
     process.exit(1);
   }
 }
 
-main();
+main().catch(console.error);
