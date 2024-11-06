@@ -33,25 +33,17 @@ app.get('/messages', async (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     const skip = (page - 1) * limit;
 
-    const [messages, total] = await Promise.all([
-      prisma.message.findMany({
-        orderBy: {
-          createdAt: 'desc'
-        },
-        skip,
-        take: limit
-      }),
-      prisma.message.count()
-    ]);
-
-    res.json({
-      data: messages,
-      pagination: {
-        total,
-        page,
-        pages: Math.ceil(total / limit)
-      }
+    const messages = await prisma.message.findMany({
+      orderBy: {
+        createdAt: 'desc'
+      },
+      skip,
+      take: limit
     });
+
+    // Retorna diretamente o array de mensagens
+    res.json(messages);
+    
   } catch (error) {
     console.error('Erro ao buscar mensagens:', error);
     res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
@@ -192,14 +184,12 @@ app.post('/trades', async (req, res) => {
   }
 });
 
-// Modificar a rota POST /messages para aceitar array de mensagens
+// Modificar a rota POST /messages para retornar apenas o array
 app.post('/messages', async (req, res) => {
   try {
     // Verifica se o body é um array
     const messages = Array.isArray(req.body) ? req.body : [req.body];
-
     const results = [];
-    const errors = [];
 
     // Processa cada mensagem no array
     for (const messageData of messages) {
@@ -207,11 +197,10 @@ app.post('/messages', async (req, res) => {
 
       // Validação básica
       if (!text) {
-        errors.push({
+        return res.status(400).json({
           error: 'Campo text é obrigatório',
           received: messageData
         });
-        continue;
       }
 
       try {
@@ -224,24 +213,16 @@ app.post('/messages', async (req, res) => {
 
         results.push(message);
       } catch (error) {
-        errors.push({
+        console.error('Erro ao processar mensagem:', error);
+        return res.status(500).json({
           error: 'Erro ao processar mensagem',
-          details: error.message,
-          message: messageData
+          details: error.message
         });
       }
     }
 
-    // Retorna resposta no formato esperado
-    res.status(201).json({
-      data: results,
-      errors: errors.length > 0 ? errors : undefined,
-      metadata: {
-        total: results.length,
-        errors: errors.length,
-        timestamp: new Date().toISOString()
-      }
-    });
+    // Retorna diretamente o array de resultados
+    res.status(201).json(results);
 
   } catch (error) {
     console.error('Erro ao criar mensagens:', error);
